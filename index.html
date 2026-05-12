@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Interactive Physics Kaleidoscope</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #050505;
+            color: white;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            touch-action: none; /* Prevents pull-to-refresh and scroll on mobile */
+        }
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            cursor: grab;
+        }
+        canvas:active {
+            cursor: grabbing;
+        }
+        
+        /* Glassmorphism panel */
+        .glass-panel {
+            background: rgba(20, 20, 25, 0.65);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
+        }
+
+        /* Custom range slider styling */
+        input[type=range] {
+            -webkit-appearance: none;
+            width: 100%;
+            background: transparent;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 16px;
+            width: 16px;
+            border-radius: 50%;
+            background: #fff;
+            cursor: pointer;
+            margin-top: -6px;
+            box-shadow: 0 0 5px rgba(0,0,0,0.5);
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            cursor: pointer;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 2px;
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="kaleidoscope"></canvas>
+
+    <!-- UI Controls -->
+    <div id="ui-panel" class="glass-panel absolute top-4 right-4 w-64 rounded-xl p-5 transition-transform duration-300">
+        <div class="flex justify-between items-center mb-4">
+            <h1 class="text-lg font-bold tracking-wide">Controls</h1>
+            <button id="toggle-ui" class="text-gray-400 hover:text-white transition-colors" title="Minimize">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 15l-6-6-6 6"/></svg>
+            </button>
+        </div>
+
+        <div id="controls-content" class="space-y-5">
+            <!-- Segments Slider -->
+            <div>
+                <div class="flex justify-between text-xs text-gray-300 mb-1">
+                    <span>Mirrors (Segments)</span>
+                    <span id="segments-val">8</span>
+                </div>
+                <input type="range" id="segments-slider" min="3" max="16" value="8">
+            </div>
+
+            <!-- Gravity Slider -->
+            <div>
+                <div class="flex justify-between text-xs text-gray-300 mb-1">
+                    <span>Gravity Intensity</span>
+                    <span id="gravity-val">1.0</span>
+                </div>
+                <input type="range" id="gravity-slider" min="0.1" max="3" step="0.1" value="1.0">
+            </div>
+
+            <!-- Auto Rotate Toggle -->
+            <div class="flex items-center justify-between">
+                <span class="text-sm text-gray-200">Auto-Rotate</span>
+                <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" id="auto-rotate-toggle" class="sr-only peer" checked>
+                    <div class="w-9 h-5 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-500"></div>
+                </label>
+            </div>
+
+            <button id="scramble-btn" class="w-full py-2 bg-white/10 hover:bg-white/20 active:bg-white/30 rounded-lg text-sm font-medium transition-colors">
+                Scramble Jewels
+            </button>
+            
+            <!-- AI Features Section -->
+            <div class="pt-4 border-t border-white/10">
+                <h2 class="text-sm font-semibold mb-2 text-blue-300">AI Theming</h2>
+                <input type="text" id="ai-theme-input" placeholder="e.g. Space, Ocean, Candy" class="w-full bg-black/40 border border-white/20 rounded p-2 text-sm text-white mb-2 placeholder-gray-500 focus:outline-none focus:border-blue-400">
+                <button id="ai-theme-btn" class="w-full py-2 bg-blue-600/50 hover:bg-blue-500/60 active:bg-blue-700/50 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2">
+                    <span>✨ Generate AI Theme</span>
+                </button>
+                <div id="ai-status" class="text-xs text-gray-400 mt-2 text-center hidden">Generating...</div>
+            </div>
+
+            <p class="text-xs text-gray-400 text-center mt-2 italic">
+                Drag screen to manually rotate
+            </p>
+        </div>
+    </div>
+
+    <!-- Custom Toast Notification -->
+    <div id="toast" class="fixed bottom-4 left-1/2 transform -translate-x-1/2 bg-gray-900/90 text-white px-6 py-3 rounded-full shadow-2xl backdrop-blur-sm border border-white/10 opacity-0 pointer-events-none transition-opacity duration-300 z-50 flex items-center gap-2">
+        <span id="toast-icon">✨</span>
+        <span id="toast-msg">Theme applied!</span>
+    </div>
+
+    <script>
+        // --- Configuration & State ---
+        const WORLD_RADIUS = 1000; // Fixed simulation size
+        let numSlices = 8;
+        let gravityForce = 1.0;
+        let autoRotate = true;
+        
+        let currentRotation = 0;
+        let rotationVelocity = 0.002;
+        let isDragging = false;
+        let startAngle = 0;
+        let initialRotation = 0;
+
+        // --- Canvas Setup ---
+        const canvas = document.getElementById('kaleidoscope');
+        const ctx = canvas.getContext('2d', { alpha: false });
+        let width = window.innerWidth;
+        let height = window.innerHeight;
+        
+        function resize() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = width;
+            canvas.height = height;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // --- Physics Setup (Matter.js) ---
+        const { Engine, Composite, Bodies, Body, Vector } = Matter;
+        const engine = Engine.create();
+        
+        // Disable default gravity; we'll apply it manually based on rotation
+        engine.world.gravity.x = 0;
+        engine.world.gravity.y = 0;
+
+        // --- AI & Theming State ---
+        let currentEmojis = [];
+        let currentThemeName = "";
+
+        // Create Circular Boundary
+        const boundaryParts = [];
+        const numBoundarySegments = 60;
+        const thickness = 400; // Increased thickness massively to prevent physics tunneling
+        
+        for (let i = 0; i < numBoundarySegments; i++) {
+            const angle = (i / numBoundarySegments) * Math.PI * 2;
+            const x = Math.cos(angle) * (WORLD_RADIUS + thickness / 2);
+            const y = Math.sin(angle) * (WORLD_RADIUS + thickness / 2);
+            const length = (2 * Math.PI * WORLD_RADIUS) / numBoundarySegments + 100; // Added overlap to seal gaps
+            
+            boundaryParts.push(Bodies.rectangle(x, y, length, thickness, {
+                isStatic: true,
+                angle: angle,
+                friction: 0.8,
+                restitution: 0.2
+            }));
+        }
+        Composite.add(engine.world, boundaryParts);
+
+        // Create Jewels (Shapes)
+        const jewels = [];
+        let jewelColors = [
+            'hsla(340, 100%, 55%, 0.7)', // Pink/Red
+            'hsla(280, 100%, 60%, 0.7)', // Purple
+            'hsla(200, 100%, 55%, 0.7)', // Blue
+            'hsla(160, 100%, 45%, 0.7)', // Teal/Green
+            'hsla(45,  100%, 60%, 0.7)', // Gold
+            'hsla(15,  100%, 60%, 0.7)'  // Orange
+        ];
+
+        function spawnJewels() {
+            // Clear old jewels
+            jewels.forEach(j => Composite.remove(engine.world, j));
+            jewels.length = 0;
+
+            const count = 75; // Amount of objects
+            for (let i = 0; i < count; i++) {
+                // Spawn within an inner radius
+                const r = Math.random() * (WORLD_RADIUS * 0.7);
+                const theta = Math.random() * Math.PI * 2;
+                const x = Math.cos(theta) * r;
+                const y = Math.sin(theta) * r;
+                
+                const size = Math.random() * 60 + 30;
+                const type = Math.floor(Math.random() * 4);
+                const color = jewelColors[Math.floor(Math.random() * jewelColors.length)];
+                
+                const options = {
+                    restitution: 0.6,
+                    friction: 0.1,
+                    density: Math.random() * 0.05 + 0.01,
+                    render: { fillStyle: color, strokeStyle: '#111', lineWidth: 4 }
+                };
+
+                let body;
+                if (currentEmojis && currentEmojis.length > 0 && Math.random() > 0.4) {
+                    // 60% chance to be an AI generated emoji
+                    options.render.emoji = currentEmojis[Math.floor(Math.random() * currentEmojis.length)];
+                    body = Bodies.circle(x, y, size * 0.6, options);
+                } else {
+                    // Use classic geometric shapes colored by the AI palette
+                    if (type === 0) {
+                        body = Bodies.circle(x, y, size * 0.8, options);
+                    } else if (type === 1) {
+                        body = Bodies.rectangle(x, y, size * 1.5, size * 0.6, options); // Glass shard
+                    } else {
+                        body = Bodies.polygon(x, y, type + 2, size, options); // Triangles, Squares, Pentagons
+                    }
+                }
+                
+                // Add some initial random rotation
+                Body.setAngularVelocity(body, (Math.random() - 0.5) * 0.2);
+                
+                jewels.push(body);
+                Composite.add(engine.world, body);
+            }
+        }
+        spawnJewels();
+
+        // --- Interaction Handling ---
+        function getEventPos(e) {
+            if (e.touches && e.touches.length > 0) {
+                return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+            }
+            return { x: e.clientX, y: e.clientY };
+        }
+
+        function onPointerDown(e) {
+            if (e.target.closest('#ui-panel')) return; // Ignore clicks on UI
+            isDragging = true;
+            const pos = getEventPos(e);
+            startAngle = Math.atan2(pos.y - height / 2, pos.x - width / 2);
+            initialRotation = currentRotation;
+            canvas.style.cursor = 'grabbing';
+        }
+
+        function onPointerMove(e) {
+            if (!isDragging) return;
+            const pos = getEventPos(e);
+            const currentAngle = Math.atan2(pos.y - height / 2, pos.x - width / 2);
+            
+            // Calculate delta and handle wrap-around
+            let angleDiff = currentAngle - startAngle;
+            
+            // Update rotation
+            const prevRotation = currentRotation;
+            currentRotation = initialRotation + angleDiff;
+            
+            // Calculate velocity for inertia
+            rotationVelocity = currentRotation - prevRotation;
+        }
+
+        function onPointerUp() {
+            isDragging = false;
+            canvas.style.cursor = 'grab';
+        }
+
+        canvas.addEventListener('mousedown', onPointerDown);
+        window.addEventListener('mousemove', onPointerMove);
+        window.addEventListener('mouseup', onPointerUp);
+        
+        canvas.addEventListener('touchstart', onPointerDown, { passive: false });
+        window.addEventListener('touchmove', onPointerMove, { passive: false });
+        window.addEventListener('touchend', onPointerUp);
+
+        // --- Rendering & Simulation Loop ---
+        function drawJewel(body) {
+            if (body.render.emoji) {
+                // Render Emoji
+                ctx.save();
+                ctx.translate(body.position.x, body.position.y);
+                ctx.rotate(body.angle);
+                
+                const radius = body.circleRadius || 20;
+                ctx.font = `${radius * 2}px system-ui`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                
+                // Add slight shadow for depth
+                ctx.shadowColor = 'rgba(0,0,0,0.5)';
+                ctx.shadowBlur = 5;
+                
+                ctx.fillText(body.render.emoji, 0, 0);
+                ctx.restore();
+            } else {
+                // Render Polygon Shape
+                ctx.beginPath();
+                const vertices = body.vertices;
+                ctx.moveTo(vertices[0].x, vertices[0].y);
+                for (let j = 1; j < vertices.length; j++) {
+                    ctx.lineTo(vertices[j].x, vertices[j].y);
+                }
+                ctx.closePath();
+                
+                ctx.fillStyle = body.render.fillStyle;
+                ctx.fill();
+                
+                ctx.lineWidth = body.render.lineWidth;
+                ctx.strokeStyle = body.render.strokeStyle;
+                ctx.stroke();
+            }
+        }
+
+        function render() {
+            // 1. Update Physics
+            if (!isDragging) {
+                if (autoRotate) {
+                    // Smoothly transition velocity to auto-rotate speed
+                    rotationVelocity += (0.003 - rotationVelocity) * 0.05;
+                } else {
+                    // Apply friction to inertia
+                    rotationVelocity *= 0.95; 
+                }
+                currentRotation += rotationVelocity;
+            }
+
+            // Apply center-point gravity to all objects
+            // Pulls every jewel towards the origin (0,0)
+            engine.world.gravity.x = 0;
+            engine.world.gravity.y = 0;
+            
+            for (let j = 0; j < jewels.length; j++) {
+                const body = jewels[j];
+                const dx = -body.position.x;
+                const dy = -body.position.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                
+                if (dist > 0) {
+                    // Normalize vector and apply mass-proportional force
+                    const forceMag = gravityForce * body.mass * 0.0015;
+                    Matter.Body.applyForce(body, body.position, {
+                        x: (dx / dist) * forceMag,
+                        y: (dy / dist) * forceMag
+                    });
+                }
+            }
+
+            // Safety net: Check if any jewels escaped the physics boundary and reset them
+            for (let j = 0; j < jewels.length; j++) {
+                const body = jewels[j];
+                const distSq = body.position.x * body.position.x + body.position.y * body.position.y;
+                // If a jewel is significantly outside the world radius, it clipped through the wall
+                if (distSq > (WORLD_RADIUS + 200) * (WORLD_RADIUS + 200)) {
+                    Matter.Body.setPosition(body, { 
+                        x: (Math.random() - 0.5) * 200, 
+                        y: (Math.random() - 0.5) * 200 
+                    });
+                    Matter.Body.setVelocity(body, { x: 0, y: 0 });
+                }
+            }
+
+            Engine.update(engine, 1000 / 60);
+
+            // 2. Clear Screen
+            ctx.fillStyle = '#080808';
+            ctx.fillRect(0, 0, width, height);
+
+            // Calculate scale required to fill the screen diagonal
+            const requiredRadius = Math.sqrt(width * width + height * height) / 2;
+            const scale = requiredRadius / WORLD_RADIUS;
+
+            // 3. Draw Kaleidoscope
+            ctx.save();
+            ctx.translate(width / 2, height / 2);
+            ctx.scale(scale, scale);
+            
+            // Visual rotation to simulate the entire tube rotating
+            ctx.rotate(-currentRotation);
+
+            const sliceAngle = Math.PI / numSlices;
+
+            // Draw all mirrored slices
+            for (let i = 0; i < numSlices * 2; i++) {
+                ctx.save();
+                
+                // Fix: Correct rotation and mirroring math to prevent skipping wedges
+                if (i % 2 === 0) {
+                    ctx.rotate(i * sliceAngle);
+                } else {
+                    // For mirrored slices, jump to the END of the slice, then flip backwards
+                    ctx.rotate((i + 1) * sliceAngle);
+                    ctx.scale(1, -1);
+                }
+
+                // Clip to the wedge shape 
+                // We add a tiny overlap (-0.005 to +0.005) to completely eliminate 1px anti-aliasing seams
+                ctx.beginPath();
+                ctx.moveTo(0, 0);
+                ctx.arc(0, 0, WORLD_RADIUS, -0.005, sliceAngle + 0.005);
+                ctx.closePath();
+                ctx.clip();
+
+                // Draw physics objects
+                for (let j = 0; j < jewels.length; j++) {
+                    drawJewel(jewels[j]);
+                }
+
+                // Optional: Draw a subtle dividing line simulating the mirror edge
+                ctx.beginPath();
+                ctx.moveTo(0, 0);
+                ctx.lineTo(WORLD_RADIUS, 0);
+                ctx.lineWidth = 2 / scale;
+                ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+                ctx.stroke();
+
+                ctx.restore();
+            }
+            ctx.restore();
+
+            // 4. Draw Vignette (Lens effect over everything)
+            const gradient = ctx.createRadialGradient(width/2, height/2, requiredRadius * 0.4, width/2, height/2, requiredRadius);
+            gradient.addColorStop(0, 'rgba(0,0,0,0)');
+            gradient.addColorStop(1, 'rgba(0,0,0,0.8)');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, width, height);
+
+            requestAnimationFrame(render);
+        }
+
+        // Start Loop
+        requestAnimationFrame(render);
+
+        // --- UI Logic ---
+        const uiPanel = document.getElementById('ui-panel');
+        const toggleBtn = document.getElementById('toggle-ui');
+        const controlsContent = document.getElementById('controls-content');
+        let uiExpanded = true;
+
+        toggleBtn.addEventListener('click', () => {
+            uiExpanded = !uiExpanded;
+            if (uiExpanded) {
+                controlsContent.style.display = 'block';
+                toggleBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 15l-6-6-6 6"/></svg>';
+            } else {
+                controlsContent.style.display = 'none';
+                toggleBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>';
+            }
+        });
+
+        document.getElementById('segments-slider').addEventListener('input', (e) => {
+            numSlices = parseInt(e.target.value);
+            document.getElementById('segments-val').innerText = numSlices;
+        });
+
+        document.getElementById('gravity-slider').addEventListener('input', (e) => {
+            gravityForce = parseFloat(e.target.value);
+            document.getElementById('gravity-val').innerText = gravityForce.toFixed(1);
+        });
+
+        document.getElementById('auto-rotate-toggle').addEventListener('change', (e) => {
+            autoRotate = e.target.checked;
+            if (autoRotate) {
+                rotationVelocity = 0.003; // Reset to forward velocity when re-enabled
+            }
+        });
+
+        document.getElementById('scramble-btn').addEventListener('click', () => {
+            spawnJewels();
+            // Add an explosive outward force to existing jewels
+            jewels.forEach(body => {
+                const forceMagnitude = 0.05 * body.mass;
+                Body.applyForce(body, body.position, {
+                    x: (Math.random() - 0.5) * forceMagnitude,
+                    y: (Math.random() - 0.5) * forceMagnitude
+                });
+            });
+        });
+
+        // --- AI API Integration ---
+        const aiThemeBtn = document.getElementById('ai-theme-btn');
+        const aiThemeInput = document.getElementById('ai-theme-input');
+        const aiStatus = document.getElementById('ai-status');
+
+        function showToast(message, isError = false) {
+            const toast = document.getElementById('toast');
+            const msgEl = document.getElementById('toast-msg');
+            const iconEl = document.getElementById('toast-icon');
+            
+            msgEl.innerText = message;
+            iconEl.innerText = isError ? '⚠️' : '✨';
+            toast.style.opacity = '1';
+            
+            setTimeout(() => {
+                toast.style.opacity = '0';
+            }, 3000);
+        }
+
+        async function generateAITheme() {
+            const promptTheme = aiThemeInput.value.trim() || 'random abstract aesthetic';
+            
+            aiThemeBtn.disabled = true;
+            aiThemeBtn.classList.add('opacity-50', 'cursor-not-allowed');
+            aiStatus.classList.remove('hidden');
+            aiStatus.innerText = 'Dreaming up new jewels...';
+
+            const apiKey = ""; // Provided by execution environment
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+            
+            const payload = {
+                contents: [{
+                    parts: [{ text: `Create a kaleidoscope visual theme based on this prompt: "${promptTheme}".` }]
+                }],
+                systemInstruction: {
+                    parts: [{ text: "You are a creative visual designer. Generate a JSON object containing a thematic 'name' (string), a 'colors' array (5 beautiful hex color codes that look good together), and an 'emojis' array (8 distinct emojis that match the theme). Example output: { \"name\": \"Deep Ocean\", \"colors\": [\"#001f3f\", \"#0074D9\", \"#7FDBFF\", \"#39CCCC\", \"#3D9970\"], \"emojis\": [\"🌊\", \"🐟\", \"🐙\", \"🐚\", \"🦈\", \"⚓\", \"🧜‍♀️\", \"🐠\"] }." }]
+                },
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: "OBJECT",
+                        properties: {
+                            name: { type: "STRING" },
+                            colors: { type: "ARRAY", items: { type: "STRING" } },
+                            emojis: { type: "ARRAY", items: { type: "STRING" } }
+                        },
+                        required: ["name", "colors", "emojis"]
+                    }
+                }
+            };
+
+            const fetchWithRetry = async (retries = 5, delay = 1000) => {
+                try {
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    
+                    if (!response.ok) throw new Error(`API Error: ${response.status}`);
+                    const data = await response.json();
+                    
+                    const resultText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                    if (!resultText) throw new Error('Invalid API response structure');
+                    
+                    return JSON.parse(resultText);
+                } catch (e) {
+                    if (retries > 0) {
+                        aiStatus.innerText = `Retrying... (${6 - retries}/5)`;
+                        await new Promise(r => setTimeout(r, delay));
+                        return fetchWithRetry(retries - 1, delay * 2);
+                    }
+                    throw e;
+                }
+            };
+
+            try {
+                const themeData = await fetchWithRetry();
+                
+                // Update global physics shapes and colors
+                jewelColors = themeData.colors;
+                currentEmojis = themeData.emojis;
+                currentThemeName = themeData.name;
+                
+                showToast(`Applied Theme: ${currentThemeName}`);
+                
+                // Respawn to immediately show the new AI-generated theme
+                spawnJewels();
+                
+            } catch (error) {
+                console.error("Gemini API Error:", error);
+                showToast("Failed to generate theme.", true);
+            } finally {
+                aiThemeBtn.disabled = false;
+                aiThemeBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                aiStatus.classList.add('hidden');
+            }
+        }
+
+        aiThemeBtn.addEventListener('click', generateAITheme);
+        aiThemeInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') generateAITheme();
+        });
+
+    </script>
+</body>
+</html>
